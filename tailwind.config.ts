@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import plugin from "tailwindcss/plugin";
 
 const config: Config = {
   darkMode: ["class"],
@@ -64,10 +65,46 @@ const config: Config = {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+        // base-nova buttons use rounded-4xl (pill shape)
+        "4xl": "2rem",
+      },
+      ringWidth: {
+        // base-nova uses ring-3 for focus rings
+        "3": "3px",
       },
     },
   },
-  plugins: [],
+  plugins: [
+    // Polyfill the Tailwind v4 @custom-variant definitions from shadcn/tailwind.css
+    // so data-checked:*, data-unchecked:*, etc. work in Tailwind v3.
+    plugin(({ addVariant }) => {
+      addVariant("data-checked", [
+        "&[data-state='checked']",
+        "&[data-checked]:not([data-checked='false'])",
+      ]);
+      addVariant("data-unchecked", [
+        "&[data-state='unchecked']",
+        "&[data-unchecked]:not([data-unchecked='false'])",
+      ]);
+      addVariant("data-disabled", [
+        "&[data-disabled='true']",
+        "&[data-disabled]:not([data-disabled='false'])",
+      ]);
+      addVariant("data-open", [
+        "&[data-state='open']",
+        "&[data-open]:not([data-open='false'])",
+      ]);
+      addVariant("data-closed", [
+        "&[data-state='closed']",
+        "&[data-closed]:not([data-closed='false'])",
+      ]);
+      addVariant("data-selected", ["&[data-selected='true']"]);
+      addVariant("data-active", [
+        "&[data-state='active']",
+        "&[data-active]:not([data-active='false'])",
+      ]);
+    }),
+  ],
 };
 
 export default config;
