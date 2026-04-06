@@ -12,7 +12,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
-import { Badge } from '@/components/ui/badge'
 import {
   Select,
   SelectContent,
@@ -20,15 +19,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Separator } from '@/components/ui/separator'
 import { X } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { createRule, updateRule, type SerializedRule, type RuleFormData } from './actions'
 
 type Props = {
   open: boolean
   onClose: () => void
   onSaved: (rule: SerializedRule) => void
-  rule: SerializedRule | null // null = create mode
+  rule: SerializedRule | null
 }
 
 type FormState = {
@@ -86,7 +85,6 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
     setErrors((prev) => ({ ...prev, [key]: undefined }))
   }
 
-  // Keyword tag input
   function commitKeywordInput() {
     const raw = form.keywordInput.trim().toUpperCase()
     if (!raw) return
@@ -110,19 +108,12 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
     }
   }
 
-  function removeKeyword(kw: string) {
-    set('keywords', form.keywords.filter((k) => k !== kw))
-  }
-
   function validate(): boolean {
     const next: typeof errors = {}
     if (!form.name.trim()) next.name = 'Name is required.'
     const allKeywords = [
       ...form.keywords,
-      ...form.keywordInput
-        .split(',')
-        .map((k) => k.trim().toUpperCase())
-        .filter(Boolean),
+      ...form.keywordInput.split(',').map((k) => k.trim().toUpperCase()).filter(Boolean),
     ]
     if (allKeywords.length === 0) next.keywords = 'At least one keyword is required.'
     if (form.rule_kind === 'KEYWORD_WEIGHT_THRESHOLD') {
@@ -136,7 +127,6 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
   }
 
   async function handleSubmit() {
-    // Flush any pending keyword input before validating
     const pendingKws = form.keywordInput
       .split(',')
       .map((k) => k.trim().toUpperCase())
@@ -180,12 +170,15 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
 
   return (
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent className="w-full sm:max-w-lg flex flex-col gap-0 overflow-y-auto">
-        <SheetHeader className="pb-4">
+      {/* Override the built-in sm:max-w-sm with a wider panel */}
+      <SheetContent className="flex flex-col p-0 sm:max-w-md [&[data-side=right]]:sm:max-w-md">
+        <SheetHeader className="px-6 pt-6 pb-4 border-b shrink-0">
           <SheetTitle>{rule ? 'Edit Rule' : 'New Rule'}</SheetTitle>
         </SheetHeader>
 
-        <div className="flex flex-col gap-5 flex-1 pb-4">
+        {/* Scrollable form body */}
+        <div className="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-5">
+
           {/* Name */}
           <Field label="Name" error={errors.name}>
             <Input
@@ -195,44 +188,56 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
             />
           </Field>
 
-          {/* Type + Rule Kind */}
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Type" error={errors.type}>
-              <Select value={form.type} onValueChange={(v) => set('type', v as FormState['type'])}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="HARD_STOP">Hard Stop</SelectItem>
-                  <SelectItem value="WARNING">Warning</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
+          {/* Verdict type — card toggle */}
+          <Field label="Verdict" error={errors.type}>
+            <div className="grid grid-cols-2 gap-2">
+              <TypeCard
+                value="HARD_STOP"
+                selected={form.type === 'HARD_STOP'}
+                onClick={() => set('type', 'HARD_STOP')}
+                title="Hard Stop"
+                sub="Triggers FAIL"
+                selectedClass="border-red-400 bg-red-50 text-red-900"
+              />
+              <TypeCard
+                value="WARNING"
+                selected={form.type === 'WARNING'}
+                onClick={() => set('type', 'WARNING')}
+                title="Warning"
+                sub="Triggers WARN"
+                selectedClass="border-amber-400 bg-amber-50 text-amber-900"
+              />
+            </div>
+          </Field>
 
-            <Field label="Rule Kind" error={errors.rule_kind}>
-              <Select
-                value={form.rule_kind}
-                onValueChange={(v) => set('rule_kind', v as FormState['rule_kind'])}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="KEYWORD">Keyword</SelectItem>
-                  <SelectItem value="KEYWORD_WEIGHT_THRESHOLD">Weight Threshold</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-          </div>
+          {/* Rule kind */}
+          <Field label="Rule Kind">
+            <Select
+              value={form.rule_kind}
+              onValueChange={(v) => set('rule_kind', v as FormState['rule_kind'])}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="KEYWORD">Keyword match</SelectItem>
+                <SelectItem value="KEYWORD_WEIGHT_THRESHOLD">Keyword + weight threshold</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
 
           {/* Keywords */}
           <Field
             label="Keywords"
-            hint="Type a keyword and press Enter or comma to add. Matching is case-insensitive substring."
+            hint="Press Enter or comma to add. Matching is case-insensitive."
             error={errors.keywords}
           >
             <div
-              className="flex flex-wrap gap-1.5 min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-within:ring-2 focus-within:ring-ring cursor-text"
+              className={cn(
+                'flex flex-wrap gap-1.5 min-h-10 w-full rounded-md border bg-background px-3 py-2 text-sm cursor-text transition-colors',
+                'focus-within:outline-none focus-within:ring-1 focus-within:ring-ring',
+                errors.keywords ? 'border-destructive' : 'border-input',
+              )}
               onClick={() =>
                 (document.getElementById('keyword-input') as HTMLInputElement)?.focus()
               }
@@ -240,13 +245,14 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
               {form.keywords.map((kw) => (
                 <span
                   key={kw}
-                  className="inline-flex items-center gap-1 bg-secondary text-secondary-foreground rounded px-2 py-0.5 text-xs font-mono"
+                  className="inline-flex items-center gap-1 rounded bg-secondary px-2 py-0.5 text-xs font-mono text-secondary-foreground"
                 >
                   {kw}
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); removeKeyword(kw) }}
-                    className="hover:text-destructive"
+                    className="text-muted-foreground hover:text-destructive transition-colors"
+                    aria-label={`Remove ${kw}`}
                   >
                     <X size={10} />
                   </button>
@@ -258,38 +264,47 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
                 onChange={(e) => set('keywordInput', e.target.value)}
                 onKeyDown={handleKeywordKeyDown}
                 onBlur={commitKeywordInput}
-                placeholder={form.keywords.length === 0 ? 'LEVERAGED, INVERSE…' : ''}
-                className="flex-1 min-w-24 bg-transparent outline-none placeholder:text-muted-foreground"
+                placeholder={form.keywords.length === 0 ? 'e.g. LEVERAGED, INVERSE' : ''}
+                className="flex-1 min-w-20 bg-transparent outline-none placeholder:text-muted-foreground text-sm"
               />
             </div>
           </Field>
 
-          {/* Match Mode */}
+          {/* Match mode — segmented control */}
           <Field label="Match Mode">
-            <div className="flex gap-2">
-              {(['ANY', 'ALL'] as const).map((mode) => (
+            <div className="flex rounded-md border border-input overflow-hidden">
+              {(['ANY', 'ALL'] as const).map((mode, i) => (
                 <button
                   key={mode}
                   type="button"
                   onClick={() => set('match_mode', mode)}
-                  className={`flex-1 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors ${
+                  className={cn(
+                    'flex-1 py-2 text-sm font-medium transition-colors focus-visible:outline-none',
+                    i > 0 && 'border-l border-input',
                     form.match_mode === mode
-                      ? 'bg-primary text-primary-foreground border-primary'
-                      : 'bg-background border-input hover:bg-accent'
-                  }`}
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-background text-foreground hover:bg-accent',
+                  )}
                 >
                   {mode === 'ANY' ? 'Any keyword' : 'All keywords'}
                 </button>
               ))}
             </div>
+            <p className="text-xs text-muted-foreground">
+              {form.match_mode === 'ANY'
+                ? 'Triggers if any keyword appears in the position name.'
+                : 'All keywords must appear in the same position name.'}
+            </p>
           </Field>
 
-          {/* Weight Threshold fields */}
+          {/* Weight threshold — grouped section */}
           {isThreshold && (
-            <>
-              <Separator />
-              <div className="grid grid-cols-2 gap-4">
-                <Field label="Weight Operator" error={errors.weight_op}>
+            <div className="rounded-md border bg-muted/40 p-4 flex flex-col gap-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Weight Condition
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Operator" error={errors.weight_op}>
                   <Select
                     value={form.weight_op}
                     onValueChange={(v) => set('weight_op', v as FormState['weight_op'])}
@@ -298,15 +313,15 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
                       <SelectValue placeholder="Select…" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="GT">&gt; greater than</SelectItem>
-                      <SelectItem value="GTE">≥ at least</SelectItem>
-                      <SelectItem value="LT">&lt; less than</SelectItem>
-                      <SelectItem value="LTE">≤ at most</SelectItem>
+                      <SelectItem value="GT">&gt;&nbsp;&nbsp;greater than</SelectItem>
+                      <SelectItem value="GTE">≥&nbsp;&nbsp;at least</SelectItem>
+                      <SelectItem value="LT">&lt;&nbsp;&nbsp;less than</SelectItem>
+                      <SelectItem value="LTE">≤&nbsp;&nbsp;at most</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
 
-                <Field label="Weight %" error={errors.weight_pct}>
+                <Field label="Threshold %" error={errors.weight_pct}>
                   <div className="relative">
                     <Input
                       type="number"
@@ -316,31 +331,31 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
                       value={form.weight_pct}
                       onChange={(e) => set('weight_pct', e.target.value)}
                       placeholder="10"
-                      className="pr-8"
+                      className="pr-7"
                     />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
                       %
                     </span>
                   </div>
                 </Field>
               </div>
-            </>
+            </div>
           )}
 
-          <Separator />
-
           {/* Description */}
-          <Field label="Description" hint="Optional — displayed in the UI only.">
+          <Field label="Description" hint="Optional — shown in the rules table.">
             <Textarea
               value={form.description}
               onChange={(e) => set('description', e.target.value)}
               placeholder="What does this rule protect against?"
               rows={3}
+              className="resize-none"
             />
           </Field>
         </div>
 
-        <SheetFooter className="pt-2 gap-2">
+        {/* Sticky footer */}
+        <SheetFooter className="px-6 py-4 border-t shrink-0 flex-row justify-end gap-2">
           <Button variant="outline" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
@@ -350,6 +365,45 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
         </SheetFooter>
       </SheetContent>
     </Sheet>
+  )
+
+  function removeKeyword(kw: string) {
+    set('keywords', form.keywords.filter((k) => k !== kw))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
+function TypeCard({
+  selected,
+  onClick,
+  title,
+  sub,
+  selectedClass,
+}: {
+  value: string
+  selected: boolean
+  onClick: () => void
+  title: string
+  sub: string
+  selectedClass: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'rounded-md border px-4 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+        selected
+          ? selectedClass
+          : 'border-input bg-background hover:bg-accent text-foreground',
+      )}
+    >
+      <div className="text-sm font-semibold">{title}</div>
+      <div className="text-xs opacity-60 mt-0.5">{sub}</div>
+    </button>
   )
 }
 
@@ -366,10 +420,13 @@ function Field({
 }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <Label className="font-medium">{label}</Label>
+      <Label className="text-sm font-medium">{label}</Label>
       {children}
-      {hint && !error && <p className="text-xs text-muted-foreground">{hint}</p>}
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {error
+        ? <p className="text-xs text-destructive">{error}</p>
+        : hint
+          ? <p className="text-xs text-muted-foreground">{hint}</p>
+          : null}
     </div>
   )
 }
