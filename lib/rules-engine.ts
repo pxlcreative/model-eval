@@ -108,7 +108,7 @@ function buildSummary(
   triggered: TriggeredRule[],
 ): string {
   if (triggered.length === 0) return 'Portfolio passed all rules.'
-  const ruleNames = [...new Set(triggered.map((t) => t.rule_name))].join(', ')
+  const ruleNames = Array.from(new Set(triggered.map((t) => t.rule_name))).join(', ')
   if (verdict === 'FAIL') return `Portfolio failed: hard stop triggered by ${ruleNames}.`
   return `Portfolio has warnings: ${ruleNames}.`
 }
