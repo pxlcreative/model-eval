@@ -1,0 +1,50 @@
+services:
+
+  # ── 1. Database ─────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB:       portfolio_evaluator
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:     ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout:  5s
+      retries:  10
+
+  # ── 2. Migration + seed (runs once, then exits) ──────────────────────────────
+  migrate:
+    build:
+      context: .
+      target:  builder          # has node_modules, prisma, ts-node, seed.ts
+    command: >
+      sh -c "npx prisma migrate deploy && npx prisma db seed"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/portfolio_evaluator
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # ── 3. Next.js application ───────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      target:  runner           # lean standalone image
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/portfolio_evaluator
+      API_KEY:      ${API_KEY:?Set API_KEY in your .env file}
+      NODE_ENV:     production
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:
