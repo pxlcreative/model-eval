@@ -43,7 +43,7 @@ describe('KEYWORD rule — ANY match mode', () => {
     expect(result.verdict).toBe('FAIL')
     expect(result.triggered).toHaveLength(1)
     expect(result.triggered[0].matched_keyword).toBe('LEVERAGED')
-    expect(result.triggered[0].matched_position).toBe('2x Leveraged ETF')
+    expect(result.triggered[0].matched_positions).toEqual(['2x Leveraged ETF'])
   })
 
   test('triggers on second keyword in the list', () => {
@@ -144,6 +144,29 @@ describe('KEYWORD_WEIGHT_THRESHOLD rule', () => {
     ]
     const result = evaluate(positions, [rule])
     expect(result.verdict).toBe('PASS')
+  })
+
+  test('triggers when combined weight of multiple matching positions exceeds threshold → WARN', () => {
+    const positions: Position[] = [
+      { product_name: 'Crypto Index Fund', weight: 6 },
+      { product_name: 'Bitcoin Crypto ETF', weight: 6 },
+      { product_name: 'S&P 500 Index', weight: 88 },
+    ]
+    const result = evaluate(positions, [rule])
+    expect(result.verdict).toBe('WARN')
+    expect(result.triggered).toHaveLength(1)
+    expect(result.triggered[0].matched_positions).toEqual(['Crypto Index Fund', 'Bitcoin Crypto ETF'])
+    expect(result.triggered[0].total_weight).toBe(12)
+  })
+
+  test('does not trigger when combined weight of multiple matching positions is at threshold → PASS', () => {
+    const positions: Position[] = [
+      { product_name: 'Crypto Index Fund', weight: 5 },
+      { product_name: 'Bitcoin Crypto ETF', weight: 5 },
+    ]
+    const result = evaluate(positions, [rule])
+    expect(result.verdict).toBe('PASS')
+    expect(result.triggered).toHaveLength(0)
   })
 })
 

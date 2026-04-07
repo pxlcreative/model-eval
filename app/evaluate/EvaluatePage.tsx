@@ -386,7 +386,7 @@ function ResultsPanel({
   portfolioName: string
 }) {
   const [showPositions, setShowPositions] = useState(false)
-  const triggeredNames = new Set(result.triggered.map((t) => t.matched_position))
+  const triggeredNames = new Set(result.triggered.flatMap((t) => t.matched_positions))
 
   return (
     <div className="rounded-lg border bg-card flex flex-col gap-6 p-6">
@@ -427,13 +427,13 @@ function ResultsPanel({
                 <TableRow key={i}>
                   <TableCell className="font-medium">{t.rule_name}</TableCell>
                   <TableCell><TypeBadge type={t.rule_type} /></TableCell>
-                  <TableCell className="text-sm">{t.matched_position}</TableCell>
+                  <TableCell className="text-sm">{t.matched_positions.join(', ')}</TableCell>
                   <TableCell>
                     <span className="font-mono text-xs bg-secondary text-secondary-foreground rounded px-1.5 py-0.5">
                       {t.matched_keyword}
                     </span>
                   </TableCell>
-                  <TableCell className="text-right font-mono text-sm">{t.position_weight}%</TableCell>
+                  <TableCell className="text-right font-mono text-sm">{t.total_weight}%</TableCell>
                 </TableRow>
               ))}
             </TableBody>

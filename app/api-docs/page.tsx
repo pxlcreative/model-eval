@@ -134,12 +134,12 @@ const EVALUATE_WARN = `{
     "verdict": "WARN",
     "triggered": [
       {
-        "rule_id":          "r1r1r1r1-...",
-        "rule_name":        "Crypto Weight Warning",
-        "rule_type":        "WARNING",
-        "matched_position": "Crypto Index Fund",
-        "matched_keyword":  "CRYPTO",
-        "position_weight":  12
+        "rule_id":           "r1r1r1r1-...",
+        "rule_name":         "Crypto Weight Warning",
+        "rule_type":         "WARNING",
+        "matched_positions": ["Crypto Index Fund", "Bitcoin Crypto ETF"],
+        "matched_keyword":   "CRYPTO",
+        "total_weight":      12
       }
     ],
     "summary": "Portfolio has warnings: Crypto Weight Warning."
@@ -152,12 +152,12 @@ const EVALUATE_FAIL = `{
     "verdict": "FAIL",
     "triggered": [
       {
-        "rule_id":          "r2r2r2r2-...",
-        "rule_name":        "Leveraged/Inverse Hard Stop",
-        "rule_type":        "HARD_STOP",
-        "matched_position": "2x Leveraged S&P ETF",
-        "matched_keyword":  "LEVERAGED",
-        "position_weight":  10
+        "rule_id":           "r2r2r2r2-...",
+        "rule_name":         "Leveraged/Inverse Hard Stop",
+        "rule_type":         "HARD_STOP",
+        "matched_positions": ["2x Leveraged S&P ETF"],
+        "matched_keyword":   "LEVERAGED",
+        "total_weight":      10
       }
     ],
     "summary": "Portfolio failed: hard stop triggered by Leveraged/Inverse Hard Stop."

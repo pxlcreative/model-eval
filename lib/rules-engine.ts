@@ -10,9 +10,9 @@ export type TriggeredRule = {
   rule_id: string
   rule_name: string
   rule_type: 'HARD_STOP' | 'WARNING'
-  matched_position: string
+  matched_positions: string[]   // one entry per matching position; multiple for threshold rules
   matched_keyword: string
-  position_weight: number
+  total_weight: number          // sum of weights across all matched positions
 }
 
 export type EvaluationResult = {
@@ -54,39 +54,49 @@ export function evaluate(positions: Position[], rules: Rule[]): EvaluationResult
   for (const rule of rules) {
     if (!rule.active) continue
 
-    for (const position of positions) {
-      const matchedKeyword = matchKeywords(
-        rule.keywords,
-        position.product_name,
-        rule.match_mode,
-      )
-      if (matchedKeyword === null) continue
-
-      if (rule.rule_kind === 'KEYWORD') {
+    if (rule.rule_kind === 'KEYWORD') {
+      // Each matching position triggers independently.
+      for (const position of positions) {
+        const matchedKeyword = matchKeywords(rule.keywords, position.product_name, rule.match_mode)
+        if (matchedKeyword === null) continue
         triggered.push({
           rule_id: rule.id,
           rule_name: rule.name,
           rule_type: rule.type,
-          matched_position: position.product_name,
+          matched_positions: [position.product_name],
           matched_keyword: matchedKeyword,
-          position_weight: position.weight,
+          total_weight: position.weight,
         })
-        continue
       }
+    } else {
+      // KEYWORD_WEIGHT_THRESHOLD — aggregate weight across ALL matching positions,
+      // then compare the total against the threshold.
+      if (rule.weight_op === null || rule.weight_pct === null) continue
 
-      // KEYWORD_WEIGHT_THRESHOLD — keyword matched; now check weight condition
-      if (rule.weight_op !== null && rule.weight_pct !== null) {
-        const threshold = rule.weight_pct!.toNumber()
-        if (passesWeightOp(position.weight, rule.weight_op!, threshold)) {
-          triggered.push({
-            rule_id: rule.id,
-            rule_name: rule.name,
-            rule_type: rule.type,
-            matched_position: position.product_name,
-            matched_keyword: matchedKeyword,
-            position_weight: position.weight,
-          })
+      type Match = { name: string; keyword: string; weight: number }
+      const matches: Match[] = []
+      for (const position of positions) {
+        const matchedKeyword = matchKeywords(rule.keywords, position.product_name, rule.match_mode)
+        if (matchedKeyword !== null) {
+          matches.push({ name: position.product_name, keyword: matchedKeyword, weight: position.weight })
         }
+      }
+      if (matches.length === 0) continue
+
+      const totalWeight = matches.reduce((sum, m) => sum + m.weight, 0)
+      const threshold = rule.weight_pct.toNumber()
+
+      if (passesWeightOp(totalWeight, rule.weight_op, threshold)) {
+        // Use unique matched keywords for the label (e.g. ANY mode may match different keywords)
+        const uniqueKeywords = Array.from(new Set(matches.map((m) => m.keyword)))
+        triggered.push({
+          rule_id: rule.id,
+          rule_name: rule.name,
+          rule_type: rule.type,
+          matched_positions: matches.map((m) => m.name),
+          matched_keyword: uniqueKeywords.join(', '),
+          total_weight: totalWeight,
+        })
       }
     }
   }
