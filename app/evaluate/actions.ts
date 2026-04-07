@@ -3,12 +3,53 @@
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { evaluate, type Position, type TriggeredRule } from '@/lib/rules-engine'
+import { resolveTickerNames } from '@/lib/ticker-lookup'
 
 export type EvalActionResult = {
   log_id: string
   verdict: 'PASS' | 'WARN' | 'FAIL'
   triggered: TriggeredRule[]
   summary: string
+}
+
+export type ResolveResult =
+  | { ok: true; positions: Position[]; resolvedCount: number }
+  | { ok: false; error: string }
+
+export async function resolvePositionNames(positions: Position[]): Promise<ResolveResult> {
+  const tickersToResolve = positions
+    .filter((p) => p.ticker && p.product_name === p.ticker.toUpperCase())
+    .map((p) => p.ticker!)
+
+  if (tickersToResolve.length === 0) {
+    return { ok: true, positions, resolvedCount: 0 }
+  }
+
+  const nameMap = await resolveTickerNames(tickersToResolve)
+
+  const unresolved = tickersToResolve.filter((t) => nameMap.get(t)?.source === 'unresolved')
+  if (unresolved.length > 0) {
+    return {
+      ok: false,
+      error:
+        `Could not resolve fund names for: ${unresolved.join(', ')}. ` +
+        `The name lookup service may be unavailable or rate-limited. ` +
+        `Please use a file with a product name column instead of ticker-only.`,
+    }
+  }
+
+  let resolvedCount = 0
+  const enriched = positions.map((p) => {
+    if (!p.ticker) return p
+    const resolved = nameMap.get(p.ticker.toUpperCase())
+    if (resolved && resolved.source !== 'unresolved') {
+      resolvedCount++
+      return { ...p, product_name: resolved.name }
+    }
+    return p
+  })
+
+  return { ok: true, positions: enriched, resolvedCount }
 }
 
 export async function runEvaluation(
