@@ -43,8 +43,8 @@ async function resolveViaOpenFIGI(
   const result = new Map<string, string>()
   if (items.length === 0) return result
 
-  // OpenFIGI caps requests at 100 items; no API key needed for basic use
-  for (const batch of chunk(items, 100)) {
+  // OpenFIGI caps requests at 10 items without an API key
+  for (const batch of chunk(items, 10)) {
     console.log('[ticker-lookup] OpenFIGI request:', batch.map((i) => `${i.idType}:${i.idValue}`))
     try {
       const res = await fetch('https://api.openfigi.com/v3/mapping', {
