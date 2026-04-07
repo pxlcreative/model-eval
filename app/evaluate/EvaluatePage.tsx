@@ -219,7 +219,7 @@ export default function EvaluatePage() {
           <Loader2 size={20} className="text-primary animate-spin" />
           <div className="text-sm font-medium">Resolving fund names…</div>
           <div className="text-xs text-muted-foreground">
-            Looking up {inputState.rawCount} ticker{inputState.rawCount !== 1 ? 's' : ''} via Yahoo Finance
+            Looking up {inputState.rawCount} ticker{inputState.rawCount !== 1 ? 's' : ''} via OpenFIGI
           </div>
         </>
       )
