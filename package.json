@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "jest",
-    "export:xano-rules": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"CommonJS\"}' ts-node scripts/export-rules-to-xano.ts"
+    "export:xano-rules": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"CommonJS\"}' ts-node -r dotenv/config scripts/export-rules-to-xano.ts"
   },
   "prisma": {
     "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
