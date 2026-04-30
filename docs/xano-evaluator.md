@@ -3,10 +3,10 @@
 A standalone Xano endpoint that mirrors `POST /api/evaluate` from this repo, intended
 for external model-database integrations. The Xano endpoint **uses no Xano database**:
 its rule set is a hard-coded constant inside the function stack, kept in sync with the
-Postgres rules in this app via the `npm run export:xano-rules` tool.
+Postgres rules in this app via the `npm run export:xano-rules` tool (also surfaced as a
+copy-paste panel on `/admin/rules`).
 
-The existing Next.js app, Postgres, admin UI, and `/api/evaluate` are untouched. Both
-endpoints can run side by side.
+The existing Next.js app, Postgres, admin UI, and `/api/evaluate` are untouched.
 
 ---
 
@@ -14,13 +14,13 @@ endpoints can run side by side.
 
 After any change to rules in `/admin/rules`:
 
-1. From repo root: `npm run export:xano-rules`
-2. Copy the printed JSON.
-3. In the Xano UI, open `model-eval / POST /evaluate`. Edit the `rules` variable in the
+1. Either click **Copy JSON** in the *Xano export* panel at `/admin/rules`,
+   or run `npm run export:xano-rules` from the repo root.
+2. In the Xano UI, open `model-eval / POST /evaluate`. Edit the `rules` variable in the
    function stack, paste, save, redeploy.
 
 Soft-deleted rules (`active = false`) are excluded automatically. The export is
-idempotent — re-running without rule changes yields identical output.
+idempotent.
 
 ---
 
@@ -41,8 +41,8 @@ idempotent — re-running without rule changes yields identical output.
 
 Either `product_name` or `ticker` must be present on every position. `weight` may be a
 number or a string with a trailing `%`, on a 0–100 scale. Positions with only a
-`ticker` are resolved to a name via OpenFIGI (see step 6 below); unresolved tickers
-keep the uppercase ticker as their `product_name`.
+`ticker` are resolved to a name via OpenFIGI; unresolved tickers keep the uppercase
+ticker as their `product_name`.
 
 ### Response (200)
 
@@ -65,9 +65,6 @@ keep the uppercase ticker as their `product_name`.
 }
 ```
 
-There is no `log_id` — this endpoint does not persist evaluations. Errors return
-`400 { "error": "..." }` for validation failures and `500` for upstream/internal errors.
-
 ### Verdict logic
 
 - Any triggered rule with `rule_type = HARD_STOP` → `FAIL`
@@ -84,106 +81,438 @@ There is no `log_id` — this endpoint does not persist evaluations. Errors retu
 
 ---
 
-## Function stack (one-time setup in Xano UI)
+## XanoScript source
 
-Mirrors `lib/rules-engine.ts:1-125`, weight normalization from `lib/parsers.ts`, and
-OpenFIGI batching from `lib/ticker-lookup.ts:1-109`.
+Two artifacts: one **custom function** (`utilities/match_keywords`) and one **API
+endpoint** (`model_eval/evaluate`). Push them via the Metadata API
+(`POST /workspace/{workspace_id}/multidoc`, `Content-Type: text/x-xanoscript`) or paste
+each into the XanoScript editor in the Xano UI.
 
-1. **Precondition** — `positions` is a non-empty array. Otherwise return
-   `400 { "error": "positions must be a non-empty array" }`.
+### Caveats before pasting
 
-2. **Create Variable `rules`** — paste the output of `npm run export:xano-rules`.
-   This is the hard-coded rule set. Each item has the shape:
-   ```jsonc
-   {
-     "id": "<uuid>",
-     "name": "Leveraged/Inverse Hard Stop",
-     "type": "HARD_STOP",
-     "rule_kind": "KEYWORD",
-     "keywords": ["LEVERAGED", "INVERSE"],
-     "match_mode": "ANY",
-     "weight_op": null,
-     "weight_pct": null
-   }
-   ```
+XanoScript has a few corners where the public docs are thin or self-inconsistent.
+Where I have low certainty, I've marked the line with `// VERIFY:` so it's easy to
+spot. Most likely tweaks:
 
-3. **Create Variable `triggered = []`.**
+- **Loop iteration alias prefixing.** Docs show both `each as user { … user.name }`
+  (no `$`) and `each as index { … $index … }` (with `$`). If your Xano version
+  rejects one form, swap to the other.
+- **`return` for early exit / non-200.** XanoScript's idiomatic way to send a 4xx
+  varies. The skeleton uses an `error` step pattern; if your workspace prefers
+  preconditions or `response.error`, adapt accordingly.
+- **Filter names.** `icontains`, `to_lower`, `to_upper`, `count`, `sum`, `unique`,
+  `implode`, `replace`, `regex_match`, `to_number`, `concat`, `map` are all
+  documented Xano filters. The exact pipe arity (`|map:"$this.weight"` vs
+  `|map:$this.weight`) sometimes varies — adjust if a filter complains.
+- **Object construction in `response`.** Some workspaces require
+  `response { value = { … } }`; others accept `response = { … }` inline. Either
+  should work.
 
-4. **Normalize positions** — For Each `positions` → `pos`:
-   - If `pos.weight` is a string, strip `%` and coerce to number. Non-numeric → 400.
-   - Require `product_name` or `ticker`. If only `ticker` is present, set
-     `pos.product_name = upper(ticker)` and tag `pos._ticker_fallback = true`.
+### 1. Custom function — `utilities/match_keywords`
 
-5. **Build `tickerFallbackIds`** — collect IDs from positions tagged in step 4.
+Mirrors `matchKeywords` in `lib/rules-engine.ts:24-36`. Case-insensitive substring
+match. Returns the matched keyword (or comma-joined keywords for `ALL` mode), or
+`null` if no match.
 
-6. **OpenFIGI resolution** — only when `tickerFallbackIds` is non-empty:
-   - Chunk into groups of **10** (matches the unauthenticated batch size used in
-     `lib/ticker-lookup.ts`).
-   - For each chunk, run an **External API Request**:
-     - URL `https://api.openfigi.com/v3/mapping`
-     - Method `POST`, `Content-Type: application/json`, timeout `6000` ms.
-     - Body: array of `{ idType, idValue, exchCode: "US" }` where `idType` is
-       `"ID_CUSIP"` if the id matches `^[A-Z0-9]{9}$`, else `"TICKER"`.
-   - Wrap in try/catch. Failures must not block evaluation; unresolved IDs keep their
-     uppercase ticker as `product_name`.
-   - Merge resolved names back onto positions by id.
+```xs
+function utilities/match_keywords {
+  description = "Case-insensitive keyword match. Returns the matched keyword string or null. Mirrors matchKeywords in lib/rules-engine.ts."
 
-7. **For Each `rules` → `rule`** — switch on `rule.rule_kind`:
+  input {
+    json keywords
+    text product_name
+    text match_mode
+  }
 
-   **Branch A — `KEYWORD`** (one entry per matching position; mirrors
-   `rules-engine.ts:57-70`):
+  stack {
+    var $matched {
+      value = null
+    }
 
-   For each `pos`, call `match_keywords(rule.keywords, pos.product_name, rule.match_mode)`.
-   On a hit, push to `triggered`:
-   ```
-   {
-     rule_id: rule.id,
-     rule_name: rule.name,
-     rule_type: rule.type,
-     matched_positions: [pos.product_name],
-     matched_keyword: <hit>,
-     total_weight: pos.weight
-   }
-   ```
+    conditional {
+      if (`$input.match_mode == "ALL"`) {
+        var $all_match {
+          value = true
+        }
+        foreach ($input.keywords) {
+          each as kw {
+            conditional {
+              if (`($input.product_name|icontains:$kw) == false`) {
+                var.update $all_match {
+                  value = false
+                }
+                break
+              }
+            }
+          }
+        }
+        conditional {
+          if (`$all_match == true`) {
+            var.update $matched {
+              value = $input.keywords|implode:", "
+            }
+          }
+        }
+      }
+      else {
+        foreach ($input.keywords) {
+          each as kw {
+            conditional {
+              if (`$input.product_name|icontains:$kw`) {
+                var.update $matched {
+                  value = $kw
+                }
+                break
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 
-   **Branch B — `KEYWORD_WEIGHT_THRESHOLD`** (aggregated; mirrors
-   `rules-engine.ts:71-102`):
+  response = $matched
+}
+```
 
-   - `matches = []`. For each `pos`, on hit push `{ name, keyword, weight }`.
-   - If `matches` is empty, continue.
-   - `totalWeight = sum(matches[].weight)`. Compare against `rule.weight_pct` using
-     `rule.weight_op` (`GT` / `GTE` / `LT` / `LTE`).
-   - On pass, push **one** entry to `triggered`:
-     ```
-     {
-       rule_id: rule.id,
-       rule_name: rule.name,
-       rule_type: rule.type,
-       matched_positions: matches[].name,
-       matched_keyword: dedup(matches[].keyword).join(", "),
-       total_weight: totalWeight
-     }
-     ```
+### 2. API endpoint — `model_eval/evaluate`
 
-8. **Verdict** — any `HARD_STOP` triggered → `FAIL`; else any triggered → `WARN`;
-   else `PASS`.
+Replace the `value = []` of `$rules` (step **2**) with the JSON from
+`npm run export:xano-rules` (or the `/admin/rules` *Xano export* panel). Wrap the
+JSON in `"…"|json_decode` so XanoScript parses it as a literal value.
 
-9. **Summary** — see strings above.
+```xs
+query model_eval/evaluate verb=POST {
+  description = "Stateless portfolio rules evaluator. Mirrors POST /api/evaluate in the Next.js app."
 
-10. **Response** — return `{ data: { verdict, triggered, summary } }`.
+  input {
+    text portfolio_name?
+    json positions
+  }
 
-### Helper: `match_keywords` custom function
+  stack {
 
-Signature: `match_keywords(keywords, product_name, match_mode) → string | null`.
+    // ── 1. Validate positions non-empty ─────────────────────────────────
+    conditional {
+      if (`($input.positions|count) == 0`) {
+        // VERIFY: workspace-specific syntax for "return early with 400".
+        // If `precondition` style is preferred, swap this block out.
+        var $err {
+          value = {error: "positions must be a non-empty array"}
+        }
+        return $err
+      }
+    }
 
-Mirrors `matchKeywords` in `lib/rules-engine.ts:24-36`:
+    // ── 2. Hard-coded rules. Replace the empty array with the JSON from
+    //      `npm run export:xano-rules` (or the /admin/rules Xano export panel).
+    var $rules {
+      value = "[]"|json_decode
+    }
 
-- Lowercase both sides; substring containment.
-- `match_mode = ANY` → return the first keyword that hits, else `null`.
-- `match_mode = ALL` → return `keywords.join(", ")` only when every keyword hits, else
-  `null`.
+    // ── 3. Triggered accumulator ────────────────────────────────────────
+    var $triggered {
+      value = []
+    }
 
-Used by both branches in step 7.
+    // ── 4. Normalize positions: coerce weights and derive product_name
+    //      from ticker when missing. Tag _ticker_fallback for step 5.
+    var $positions {
+      value = []
+    }
+    foreach ($input.positions) {
+      each as raw {
+        // Coerce weight (number or "12.34%")
+        var $w {
+          value = $raw.weight
+        }
+        conditional {
+          if (`($w|typeof) == "string"`) {
+            var.update $w {
+              value = ($w|replace:"%":"")|to_number   // VERIFY: filter name
+            }
+          }
+        }
+
+        // Derive product_name from ticker if missing
+        var $name {
+          value = $raw.product_name
+        }
+        var $ticker_fallback {
+          value = false
+        }
+        conditional {
+          if (`$name == null || $name == ""`) {
+            conditional {
+              if (`$raw.ticker != null && $raw.ticker != ""`) {
+                var.update $name {
+                  value = $raw.ticker|to_upper
+                }
+                var.update $ticker_fallback {
+                  value = true
+                }
+              }
+              else {
+                // Both missing — invalid. Fail fast.
+                var $err {
+                  value = {error: "each position must include product_name or ticker"}
+                }
+                return $err
+              }
+            }
+          }
+        }
+
+        array.push $positions {
+          value = {
+            product_name: $name,
+            ticker: $raw.ticker,
+            weight: $w,
+            _ticker_fallback: $ticker_fallback
+          }
+        }
+      }
+    }
+
+    // ── 5. Build tickerFallbackPositions (positions where the name was inferred) ─
+    array.filter ($positions) if (`$this._ticker_fallback == true`) as $tickerFallbackPositions
+
+    // ── 6. OpenFIGI resolution. Single batch — capped at 10 ids
+    //      (the unauthenticated batch limit; see lib/ticker-lookup.ts).
+    //      For larger ticker-only portfolios extend with chunking.
+    conditional {
+      if (`($tickerFallbackPositions|count) > 0`) {
+        var $figi_body {
+          value = []
+        }
+        foreach ($tickerFallbackPositions) {
+          each as p {
+            var $idType {
+              value = "TICKER"
+            }
+            // CUSIPs are 9 alphanumeric chars
+            conditional {
+              if (`$p.ticker|regex_match:"^[A-Z0-9]{9}$"`) {   // VERIFY: filter name
+                var.update $idType {
+                  value = "ID_CUSIP"
+                }
+              }
+            }
+            array.push $figi_body {
+              value = {idType: $idType, idValue: $p.ticker, exchCode: "US"}
+            }
+          }
+        }
+
+        api.request {
+          url = "https://api.openfigi.com/v3/mapping"
+          method = "POST"
+          params = $figi_body
+          headers = []|array_push:"Content-Type: application/json"
+          timeout = 6
+        } as $figi_response
+
+        // Map figi_response back onto $positions by ticker.
+        // Response shape: [{ data: [{ name }] }, ...] aligned with the request order.
+        var $i {
+          value = 0
+        }
+        foreach ($tickerFallbackPositions) {
+          each as p {
+            // VERIFY: how the API response body is exposed — usually
+            //   $figi_response.response.result  or  $figi_response.body
+            var $resolved {
+              value = $figi_response.response.result[$i].data[0].name
+            }
+            conditional {
+              if (`$resolved != null && $resolved != ""`) {
+                array.map ($positions) as $positions {
+                  value = ($this.ticker == $p.ticker) ? ({...$this, product_name: $resolved}) : $this   // VERIFY: object spread support
+                }
+              }
+            }
+            var.update $i {
+              value = $i + 1
+            }
+          }
+        }
+      }
+    }
+
+    // ── 7. Evaluate every rule ───────────────────────────────────────────
+    foreach ($rules) {
+      each as rule {
+        switch ($rule.rule_kind) {
+
+          // Branch A — KEYWORD: per-position trigger.
+          case ("KEYWORD") {
+            foreach ($positions) {
+              each as pos {
+                function.run utilities/match_keywords {
+                  input = {
+                    keywords: $rule.keywords,
+                    product_name: $pos.product_name,
+                    match_mode: $rule.match_mode
+                  }
+                } as $hit
+                conditional {
+                  if (`$hit != null`) {
+                    array.push $triggered {
+                      value = {
+                        rule_id: $rule.id,
+                        rule_name: $rule.name,
+                        rule_type: $rule.type,
+                        matched_positions: [$pos.product_name],
+                        matched_keyword: $hit,
+                        total_weight: $pos.weight
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } break
+
+          // Branch B — KEYWORD_WEIGHT_THRESHOLD: aggregate matching positions,
+          // sum weights, compare to threshold. One trigger per rule.
+          case ("KEYWORD_WEIGHT_THRESHOLD") {
+            var $matches {
+              value = []
+            }
+            foreach ($positions) {
+              each as pos {
+                function.run utilities/match_keywords {
+                  input = {
+                    keywords: $rule.keywords,
+                    product_name: $pos.product_name,
+                    match_mode: $rule.match_mode
+                  }
+                } as $hit
+                conditional {
+                  if (`$hit != null`) {
+                    array.push $matches {
+                      value = {
+                        name: $pos.product_name,
+                        keyword: $hit,
+                        weight: $pos.weight
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            conditional {
+              if (`($matches|count) > 0`) {
+                var $totalWeight {
+                  value = $matches|map:"$this.weight"|sum
+                }
+                var $threshold {
+                  value = $rule.weight_pct
+                }
+                var $passes {
+                  value = false
+                }
+                switch ($rule.weight_op) {
+                  case ("GT")  { var.update $passes { value = `$totalWeight >  $threshold` } } break
+                  case ("GTE") { var.update $passes { value = `$totalWeight >= $threshold` } } break
+                  case ("LT")  { var.update $passes { value = `$totalWeight <  $threshold` } } break
+                  case ("LTE") { var.update $passes { value = `$totalWeight <= $threshold` } } break
+                  default {}
+                }
+                conditional {
+                  if (`$passes == true`) {
+                    var $kwLabel {
+                      value = $matches|map:"$this.keyword"|unique|implode:", "
+                    }
+                    array.push $triggered {
+                      value = {
+                        rule_id: $rule.id,
+                        rule_name: $rule.name,
+                        rule_type: $rule.type,
+                        matched_positions: $matches|map:"$this.name",
+                        matched_keyword: $kwLabel,
+                        total_weight: $totalWeight
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } break
+
+          default {}
+        }
+      }
+    }
+
+    // ── 8. Verdict ──────────────────────────────────────────────────────
+    array.has ($triggered) if (`$this.rule_type == "HARD_STOP"`) as $hasHardStop
+    var $verdict {
+      value = "PASS"
+    }
+    conditional {
+      if (`$hasHardStop == true`) {
+        var.update $verdict {
+          value = "FAIL"
+        }
+      }
+      elseif (`($triggered|count) > 0`) {
+        var.update $verdict {
+          value = "WARN"
+        }
+      }
+    }
+
+    // ── 9. Summary (must match lib/rules-engine.ts:116-124) ─────────────
+    var $summary {
+      value = "Portfolio passed all rules."
+    }
+    conditional {
+      if (`($triggered|count) > 0`) {
+        var $names {
+          value = $triggered|map:"$this.rule_name"|unique|implode:", "
+        }
+        conditional {
+          if (`$verdict == "FAIL"`) {
+            var.update $summary {
+              value = "Portfolio failed: hard stop triggered by "|concat:$names:"."
+            }
+          }
+          else {
+            var.update $summary {
+              value = "Portfolio has warnings: "|concat:$names:"."
+            }
+          }
+        }
+      }
+    }
+  }
+
+  response = {
+    data: {
+      verdict: $verdict,
+      triggered: $triggered,
+      summary: $summary
+    }
+  }
+}
+```
+
+### Pushing both via the Metadata API
+
+If you'd rather not paste in the UI, push both as a single multidoc:
+
+```bash
+curl -X POST \
+  "https://{instance}.xano.io/api:meta/workspace/{workspace_id}/multidoc" \
+  -H "Authorization: Bearer $XANO_TOKEN" \
+  -H "Content-Type: text/x-xanoscript" \
+  --data-binary @xano-evaluator.xs
+```
+
+Where `xano-evaluator.xs` concatenates the two blocks above (function first, then
+endpoint). See <https://docs.xano.com/api-reference/xanoscript/push-xanoscript-multidoc>.
 
 ---
 
