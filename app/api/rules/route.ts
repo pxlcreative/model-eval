@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { ok, err, requireApiKey } from '@/lib/api'
 
 const RULE_TYPES = ['HARD_STOP', 'WARNING'] as const
-const RULE_KINDS = ['KEYWORD', 'KEYWORD_WEIGHT_THRESHOLD'] as const
+const RULE_KINDS = ['KEYWORD', 'KEYWORD_WEIGHT_THRESHOLD', 'REGEX', 'REGEX_WEIGHT_THRESHOLD'] as const
 const MATCH_MODES = ['ANY', 'ALL'] as const
 const WEIGHT_OPS = ['GT', 'GTE', 'LT', 'LTE'] as const
 
@@ -38,11 +38,22 @@ function validateRuleBody(body: unknown): string | null {
   if (b.match_mode !== undefined && !isMatchMode(b.match_mode))
     return `"match_mode" must be one of: ${MATCH_MODES.join(', ')}.`
 
-  if (b.rule_kind === 'KEYWORD_WEIGHT_THRESHOLD') {
+  const isThreshold = b.rule_kind === 'KEYWORD_WEIGHT_THRESHOLD' || b.rule_kind === 'REGEX_WEIGHT_THRESHOLD'
+  if (isThreshold) {
     if (!isWeightOp(b.weight_op))
-      return `"weight_op" is required for KEYWORD_WEIGHT_THRESHOLD and must be one of: ${WEIGHT_OPS.join(', ')}.`
+      return `"weight_op" is required for ${b.rule_kind} and must be one of: ${WEIGHT_OPS.join(', ')}.`
     if (typeof b.weight_pct !== 'number' || isNaN(b.weight_pct))
-      return '"weight_pct" is required for KEYWORD_WEIGHT_THRESHOLD and must be a number.'
+      return `"weight_pct" is required for ${b.rule_kind} and must be a number.`
+  }
+
+  if (b.rule_kind === 'REGEX' || b.rule_kind === 'REGEX_WEIGHT_THRESHOLD') {
+    for (const p of b.keywords as string[]) {
+      try {
+        new RegExp(p, 'i')
+      } catch (e) {
+        return `Invalid regex pattern "${p}": ${(e as Error).message}`
+      }
+    }
   }
 
   return null

@@ -7,7 +7,7 @@ import { ParseError } from './parsers'
 export { ParseError }
 
 export type RuleType = 'HARD_STOP' | 'WARNING'
-export type RuleKind = 'KEYWORD' | 'KEYWORD_WEIGHT_THRESHOLD'
+export type RuleKind = 'KEYWORD' | 'KEYWORD_WEIGHT_THRESHOLD' | 'REGEX' | 'REGEX_WEIGHT_THRESHOLD'
 export type MatchMode = 'ANY' | 'ALL'
 export type WeightOp = 'GT' | 'GTE' | 'LT' | 'LTE'
 
@@ -116,7 +116,12 @@ function csvEscape(value: unknown): string {
 function csvCell(rule: FullRule, field: RuleField): string {
   const v = projectField(rule, field)
   if (field === 'keywords') {
-    return csvEscape((v as string[]).join('|'))
+    const arr = v as string[]
+    // Pipe-separated is the preferred encoding for spreadsheet readability.
+    // But regex alternation also uses `|`, so when ANY keyword contains a
+    // pipe, fall back to a JSON-encoded array — round-trip-safe regardless.
+    const text = arr.some((k) => k.includes('|')) ? JSON.stringify(arr) : arr.join('|')
+    return csvEscape(text)
   }
   if (field === 'active') {
     return v ? 'true' : 'false'
@@ -141,7 +146,12 @@ export function serializeRulesCSV(
 // ---------------------------------------------------------------------------
 
 const VALID_TYPES = new Set<RuleType>(['HARD_STOP', 'WARNING'])
-const VALID_KINDS = new Set<RuleKind>(['KEYWORD', 'KEYWORD_WEIGHT_THRESHOLD'])
+const VALID_KINDS = new Set<RuleKind>([
+  'KEYWORD',
+  'KEYWORD_WEIGHT_THRESHOLD',
+  'REGEX',
+  'REGEX_WEIGHT_THRESHOLD',
+])
 const VALID_MATCH_MODES = new Set<MatchMode>(['ANY', 'ALL'])
 const VALID_WEIGHT_OPS = new Set<WeightOp>(['GT', 'GTE', 'LT', 'LTE'])
 
@@ -194,11 +204,21 @@ function normalizeRow(raw: Record<string, unknown>, label: string): ImportRow {
   if (Array.isArray(raw.keywords)) {
     keywords = raw.keywords.map((k) => String(k).trim()).filter((k) => k !== '')
   } else if (typeof raw.keywords === 'string') {
-    // CSV path: pipe-separated.
-    keywords = raw.keywords
-      .split('|')
-      .map((k) => k.trim())
-      .filter((k) => k !== '')
+    // CSV path. A leading `[` signals a JSON-encoded array (used when any
+    // keyword contains `|`, which would conflict with the pipe separator).
+    // Otherwise, pipe-separated.
+    const s = raw.keywords.trim()
+    if (s.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(s)
+        if (!Array.isArray(parsed)) throw new Error('not an array')
+        keywords = parsed.map((k) => String(k).trim()).filter((k) => k !== '')
+      } catch (e) {
+        throw new ParseError(`${label}: keywords cell looks like JSON but failed to parse: ${(e as Error).message}`)
+      }
+    } else {
+      keywords = s.split('|').map((k) => k.trim()).filter((k) => k !== '')
+    }
   } else {
     throw new ParseError(`${label}: keywords must be an array or pipe-separated string.`)
   }
@@ -238,12 +258,23 @@ function normalizeRow(raw: Record<string, unknown>, label: string): ImportRow {
   }
   if (wp !== undefined) out.weight_pct = wp
 
-  if (rule_kind === 'KEYWORD_WEIGHT_THRESHOLD') {
+  const isThreshold = rule_kind === 'KEYWORD_WEIGHT_THRESHOLD' || rule_kind === 'REGEX_WEIGHT_THRESHOLD'
+  if (isThreshold) {
     if (out.weight_op === undefined || out.weight_op === null) {
-      throw new ParseError(`${label}: KEYWORD_WEIGHT_THRESHOLD requires weight_op.`)
+      throw new ParseError(`${label}: ${rule_kind} requires weight_op.`)
     }
     if (out.weight_pct === undefined || out.weight_pct === null) {
-      throw new ParseError(`${label}: KEYWORD_WEIGHT_THRESHOLD requires weight_pct.`)
+      throw new ParseError(`${label}: ${rule_kind} requires weight_pct.`)
+    }
+  }
+
+  if (rule_kind === 'REGEX' || rule_kind === 'REGEX_WEIGHT_THRESHOLD') {
+    for (const p of keywords) {
+      try {
+        new RegExp(p, 'i')
+      } catch (e) {
+        throw new ParseError(`${label}: invalid regex pattern "${p}": ${(e as Error).message}`)
+      }
     }
   }
 

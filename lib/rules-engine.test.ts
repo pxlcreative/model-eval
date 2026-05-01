@@ -272,3 +272,127 @@ describe('summary string', () => {
     expect(result.summary).toContain('Crypto Warning')
   })
 })
+
+// ---------------------------------------------------------------------------
+// REGEX rules
+// ---------------------------------------------------------------------------
+
+describe('REGEX rule — ANY match mode', () => {
+  test('triggers on regex match → matched_keyword carries the substring, not the pattern', () => {
+    const rule = makeRule({
+      type: 'HARD_STOP',
+      rule_kind: 'REGEX',
+      keywords: [String.raw`\b\d+x\b`],
+    })
+    const positions: Position[] = [
+      { product_name: '3x Leveraged ETF', weight: 5 },
+      { product_name: 'S&P 500 Index', weight: 95 },
+    ]
+    const result = evaluate(positions, [rule])
+    expect(result.verdict).toBe('FAIL')
+    expect(result.triggered).toHaveLength(1)
+    expect(result.triggered[0].matched_keyword).toBe('3x')
+    expect(result.triggered[0].matched_positions).toEqual(['3x Leveraged ETF'])
+  })
+
+  test('case-insensitive by default', () => {
+    const rule = makeRule({
+      type: 'WARNING',
+      rule_kind: 'REGEX',
+      keywords: [String.raw`leverage`],
+    })
+    const positions: Position[] = [{ product_name: '2x LEVERAGE Fund', weight: 10 }]
+    const result = evaluate(positions, [rule])
+    expect(result.verdict).toBe('WARN')
+    expect(result.triggered[0].matched_keyword).toBe('LEVERAGE')
+  })
+
+  test('no match → PASS', () => {
+    const rule = makeRule({
+      type: 'HARD_STOP',
+      rule_kind: 'REGEX',
+      keywords: [String.raw`\bcrypto\b`],
+    })
+    const positions: Position[] = [{ product_name: 'S&P 500 Index Fund', weight: 100 }]
+    const result = evaluate(positions, [rule])
+    expect(result.verdict).toBe('PASS')
+    expect(result.triggered).toHaveLength(0)
+  })
+})
+
+describe('REGEX rule — ALL match mode', () => {
+  test('triggers when every pattern hits — matched_keyword joins matched substrings', () => {
+    const rule = makeRule({
+      type: 'HARD_STOP',
+      rule_kind: 'REGEX',
+      keywords: [String.raw`lev`, String.raw`\d+x`],
+      match_mode: 'ALL',
+    })
+    const positions: Position[] = [{ product_name: '4x Leverage Fund', weight: 5 }]
+    const result = evaluate(positions, [rule])
+    expect(result.verdict).toBe('FAIL')
+    expect(result.triggered).toHaveLength(1)
+    // Order follows the rule.keywords order; matched substring per pattern.
+    expect(result.triggered[0].matched_keyword).toBe('Lev, 4x')
+  })
+
+  test('does not trigger when only some patterns hit', () => {
+    const rule = makeRule({
+      type: 'HARD_STOP',
+      rule_kind: 'REGEX',
+      keywords: [String.raw`lev`, String.raw`\d+x`],
+      match_mode: 'ALL',
+    })
+    const positions: Position[] = [{ product_name: 'Leveraged ETF', weight: 5 }]
+    const result = evaluate(positions, [rule])
+    expect(result.verdict).toBe('PASS')
+  })
+})
+
+describe('REGEX_WEIGHT_THRESHOLD rule', () => {
+  test('aggregates regex-matching positions across the portfolio', () => {
+    const rule = makeRule({
+      type: 'WARNING',
+      rule_kind: 'REGEX_WEIGHT_THRESHOLD',
+      keywords: [String.raw`crypto|bitcoin`],
+      weight_op: 'GT',
+      weight_pct: D(10),
+    })
+    const positions: Position[] = [
+      { product_name: 'Crypto Index Fund', weight: 6 },
+      { product_name: 'Bitcoin Trust', weight: 6 },
+      { product_name: 'S&P 500', weight: 88 },
+    ]
+    const result = evaluate(positions, [rule])
+    expect(result.verdict).toBe('WARN')
+    expect(result.triggered).toHaveLength(1)
+    expect(result.triggered[0].total_weight).toBe(12)
+    expect(result.triggered[0].matched_positions).toEqual(['Crypto Index Fund', 'Bitcoin Trust'])
+  })
+
+  test('does not trigger below threshold', () => {
+    const rule = makeRule({
+      type: 'WARNING',
+      rule_kind: 'REGEX_WEIGHT_THRESHOLD',
+      keywords: [String.raw`crypto`],
+      weight_op: 'GT',
+      weight_pct: D(10),
+    })
+    const result = evaluate([{ product_name: 'Crypto Fund', weight: 5 }], [rule])
+    expect(result.verdict).toBe('PASS')
+  })
+})
+
+describe('REGEX rule — invalid patterns are skipped silently', () => {
+  test('rule with unparseable regex does not throw and does not trigger', () => {
+    const rule = makeRule({
+      type: 'HARD_STOP',
+      rule_kind: 'REGEX',
+      keywords: ['['], // not a valid regex
+    })
+    const positions: Position[] = [{ product_name: '[bracket fund]', weight: 100 }]
+    expect(() => evaluate(positions, [rule])).not.toThrow()
+    const result = evaluate(positions, [rule])
+    expect(result.verdict).toBe('PASS')
+  })
+})

@@ -90,10 +90,24 @@ ticker as their `product_name`.
 
 ## XanoScript source
 
-Two artifacts: one **custom function** (`utilities/match_keywords`) and one **API
-endpoint** (`model_eval/evaluate`). Push them via the Metadata API
+Two artifacts: one **custom function** (`utilities/match_text`) and one **API
+endpoint** (`model_eval/evaluate`). The helper takes a `match_type` input
+(`"keyword"` or `"regex"`) and dispatches internally — so the four `RuleKind`
+values (`KEYWORD`, `KEYWORD_WEIGHT_THRESHOLD`, `REGEX`, `REGEX_WEIGHT_THRESHOLD`)
+collapse into two code paths: simple per-position trigger vs. aggregated weight
+threshold. Push both via the Metadata API
 (`POST /workspace/{workspace_id}/multidoc`, `Content-Type: text/x-xanoscript`) or paste
 each into the XanoScript editor in the Xano UI.
+
+### Regex compatibility note
+
+JavaScript regex (used by the Next.js engine) and Xano's PCRE-style `regex_match`
+are mostly compatible for everyday patterns: character classes (`[a-z]`, `\d`,
+`\w`, `\s`), anchors (`\b`, `^`, `$`), quantifiers (`*`, `+`, `?`, `{n,m}`),
+alternation, basic groups, lookahead/lookbehind. Avoid named groups
+(`(?<name>...)`) and Unicode property escapes (`\p{L}`) — flavor-specific.
+Both engines apply the case-insensitive flag implicitly here, so don't
+prefix your patterns with `(?i)` (no harm, just redundant).
 
 ### Caveats before pasting
 
@@ -108,27 +122,34 @@ spot. Most likely tweaks:
   varies. The skeleton uses an `error` step pattern; if your workspace prefers
   preconditions or `response.error`, adapt accordingly.
 - **Filter names.** `icontains`, `to_lower`, `to_upper`, `count`, `sum`, `unique`,
-  `implode`, `replace`, `regex_match`, `to_number`, `concat`, `map` are all
-  documented Xano filters. The exact pipe arity (`|map:"$this.weight"` vs
-  `|map:$this.weight`) sometimes varies — adjust if a filter complains.
+  `implode`, `replace`, `regex_match`, `regex_match_first`, `to_number`, `concat`,
+  `map` are all documented Xano filters. `regex_match_first` (returns the first
+  matched substring or null) is the regex equivalent of `icontains` for our
+  purposes. If your workspace exposes it under a different name (`regex_search`,
+  `regex_extract`), swap accordingly. The exact pipe arity
+  (`|map:"$this.weight"` vs `|map:$this.weight`) sometimes varies — adjust if a
+  filter complains.
 - **Object construction in `response`.** Some workspaces require
   `response { value = { … } }`; others accept `response = { … }` inline. Either
   should work.
 
-### 1. Custom function — `utilities/match_keywords`
+### 1. Custom function — `utilities/match_text`
 
-Mirrors `matchKeywords` in `lib/rules-engine.ts:24-36`. Case-insensitive substring
-match. Returns the matched keyword (or comma-joined keywords for `ALL` mode), or
-`null` if no match.
+Mirrors `matchKeywords` and `matchPatterns` in `lib/rules-engine.ts`. Takes a
+`match_type` of `"keyword"` (case-insensitive substring via `icontains`) or
+`"regex"` (PCRE via `regex_match`) and applies `ANY` / `ALL` semantics. For
+keyword matches the result is the keyword that hit; for regex it's the actual
+matched substring. Returns `null` when no match.
 
 ```xs
-function utilities/match_keywords {
-  description = "Case-insensitive keyword match. Returns the matched keyword string or null. Mirrors matchKeywords in lib/rules-engine.ts."
+function utilities/match_text {
+  description = "Case-insensitive keyword OR regex match. Returns the matched substring/keyword, or null. Mirrors matchKeywords + matchPatterns in lib/rules-engine.ts."
 
   input {
-    json keywords
+    json keywords            // For "keyword" mode: substrings. For "regex": patterns.
     text product_name
-    text match_mode
+    text match_mode          // "ANY" | "ALL"
+    text match_type          // "keyword" | "regex"
   }
 
   stack {
@@ -141,14 +162,32 @@ function utilities/match_keywords {
         var $all_match {
           value = true
         }
+        var $all_hits {
+          value = []
+        }
         foreach ($input.keywords) {
           each as kw {
+            // For regex mode, capture the actual matched substring; for keyword,
+            // the keyword IS the substring. `regex_match_first` is Xano's
+            // pattern-find filter (returns the first match string or null).
+            // VERIFY: filter name in your workspace — may be `regex_match` or
+            // `regex_search` depending on Xano version.
+            var $hit {
+              value = ($input.match_type == "regex")
+                ? ($input.product_name|regex_match_first:$kw)
+                : (($input.product_name|icontains:$kw) ? $kw : null)
+            }
             conditional {
-              if (`($input.product_name|icontains:$kw) == false`) {
+              if (`$hit == null`) {
                 var.update $all_match {
                   value = false
                 }
                 break
+              }
+              else {
+                array.push $all_hits {
+                  value = $hit
+                }
               }
             }
           }
@@ -156,18 +195,24 @@ function utilities/match_keywords {
         conditional {
           if (`$all_match == true`) {
             var.update $matched {
-              value = $input.keywords|implode:", "
+              value = $all_hits|implode:", "
             }
           }
         }
       }
       else {
+        // ANY mode
         foreach ($input.keywords) {
           each as kw {
+            var $hit {
+              value = ($input.match_type == "regex")
+                ? ($input.product_name|regex_match_first:$kw)
+                : (($input.product_name|icontains:$kw) ? $kw : null)
+            }
             conditional {
-              if (`$input.product_name|icontains:$kw`) {
+              if (`$hit != null`) {
                 var.update $matched {
-                  value = $kw
+                  value = $hit
                 }
                 break
               }
@@ -346,20 +391,31 @@ query model_eval/evaluate verb=POST {
       }
     }
 
-    // ── 7. Evaluate every rule ───────────────────────────────────────────
+    // ── 7. Evaluate every rule.
+    //      Two axes derived from rule_kind:
+    //        - $match_type: "regex" if rule_kind contains "REGEX", else "keyword"
+    //        - $is_threshold: true if rule_kind ends in "_WEIGHT_THRESHOLD"
+    //      The same body runs for all four kinds; only the helper input changes.
     foreach ($rules) {
       each as rule {
-        switch ($rule.rule_kind) {
+        var $match_type {
+          value = ($rule.rule_kind|icontains:"REGEX") ? "regex" : "keyword"
+        }
+        var $is_threshold {
+          value = ($rule.rule_kind|icontains:"WEIGHT_THRESHOLD") ? true : false
+        }
 
-          // Branch A — KEYWORD: per-position trigger.
-          case ("KEYWORD") {
+        conditional {
+          if (`$is_threshold == false`) {
+            // Per-position trigger (KEYWORD or REGEX).
             foreach ($positions) {
               each as pos {
-                function.run utilities/match_keywords {
+                function.run utilities/match_text {
                   input = {
                     keywords: $rule.keywords,
                     product_name: $pos.product_name,
-                    match_mode: $rule.match_mode
+                    match_mode: $rule.match_mode,
+                    match_type: $match_type
                   }
                 } as $hit
                 conditional {
@@ -378,21 +434,20 @@ query model_eval/evaluate verb=POST {
                 }
               }
             }
-          } break
-
-          // Branch B — KEYWORD_WEIGHT_THRESHOLD: aggregate matching positions,
-          // sum weights, compare to threshold. One trigger per rule.
-          case ("KEYWORD_WEIGHT_THRESHOLD") {
+          }
+          else {
+            // Aggregated weight threshold (KEYWORD_WEIGHT_THRESHOLD or REGEX_WEIGHT_THRESHOLD).
             var $matches {
               value = []
             }
             foreach ($positions) {
               each as pos {
-                function.run utilities/match_keywords {
+                function.run utilities/match_text {
                   input = {
                     keywords: $rule.keywords,
                     product_name: $pos.product_name,
-                    match_mode: $rule.match_mode
+                    match_mode: $rule.match_mode,
+                    match_type: $match_type
                   }
                 } as $hit
                 conditional {
@@ -446,9 +501,7 @@ query model_eval/evaluate verb=POST {
                 }
               }
             }
-          } break
-
-          default {}
+          }
         }
       }
     }

@@ -10,7 +10,7 @@ export type SerializedRule = {
   id: string
   name: string
   type: 'HARD_STOP' | 'WARNING'
-  rule_kind: 'KEYWORD' | 'KEYWORD_WEIGHT_THRESHOLD'
+  rule_kind: 'KEYWORD' | 'KEYWORD_WEIGHT_THRESHOLD' | 'REGEX' | 'REGEX_WEIGHT_THRESHOLD'
   keywords: string[]
   match_mode: 'ANY' | 'ALL'
   weight_op: 'GT' | 'GTE' | 'LT' | 'LTE' | null
@@ -38,7 +38,7 @@ export async function getRules(): Promise<SerializedRule[]> {
 export type RuleFormData = {
   name: string
   type: 'HARD_STOP' | 'WARNING'
-  rule_kind: 'KEYWORD' | 'KEYWORD_WEIGHT_THRESHOLD'
+  rule_kind: 'KEYWORD' | 'KEYWORD_WEIGHT_THRESHOLD' | 'REGEX' | 'REGEX_WEIGHT_THRESHOLD'
   keywords: string[]
   match_mode: 'ANY' | 'ALL'
   weight_op: 'GT' | 'GTE' | 'LT' | 'LTE' | null

@@ -30,16 +30,26 @@ type Props = {
   rule: SerializedRule | null
 }
 
+type RuleKindValue = 'KEYWORD' | 'KEYWORD_WEIGHT_THRESHOLD' | 'REGEX' | 'REGEX_WEIGHT_THRESHOLD'
+
 type FormState = {
   name: string
   type: 'HARD_STOP' | 'WARNING'
-  rule_kind: 'KEYWORD' | 'KEYWORD_WEIGHT_THRESHOLD'
+  rule_kind: RuleKindValue
   keywords: string[]
   keywordInput: string
   match_mode: 'ANY' | 'ALL'
   weight_op: 'GT' | 'GTE' | 'LT' | 'LTE' | ''
   weight_pct: string
   description: string
+}
+
+function isRegexKind(k: RuleKindValue): boolean {
+  return k === 'REGEX' || k === 'REGEX_WEIGHT_THRESHOLD'
+}
+
+function isThresholdKind(k: RuleKindValue): boolean {
+  return k === 'KEYWORD_WEIGHT_THRESHOLD' || k === 'REGEX_WEIGHT_THRESHOLD'
 }
 
 const EMPTY_FORM: FormState = {
@@ -86,6 +96,8 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
   }
 
   function commitKeywordInput() {
+    // Keyword chip-input only — auto-uppercases. Patterns use the textarea path
+    // (no transformation).
     const raw = form.keywordInput.trim().toUpperCase()
     if (!raw) return
     const newKws = raw
@@ -111,12 +123,26 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
   function validate(): boolean {
     const next: typeof errors = {}
     if (!form.name.trim()) next.name = 'Name is required.'
-    const allKeywords = [
-      ...form.keywords,
-      ...form.keywordInput.split(',').map((k) => k.trim().toUpperCase()).filter(Boolean),
-    ]
-    if (allKeywords.length === 0) next.keywords = 'At least one keyword is required.'
-    if (form.rule_kind === 'KEYWORD_WEIGHT_THRESHOLD') {
+    const isRegex = isRegexKind(form.rule_kind)
+    const allKeywords = isRegex
+      ? form.keywords
+      : [
+          ...form.keywords,
+          ...form.keywordInput.split(',').map((k) => k.trim().toUpperCase()).filter(Boolean),
+        ]
+    if (allKeywords.length === 0) {
+      next.keywords = isRegex ? 'At least one regex pattern is required.' : 'At least one keyword is required.'
+    } else if (isRegex) {
+      for (const p of allKeywords) {
+        try {
+          new RegExp(p, 'i')
+        } catch (e) {
+          next.keywords = `Invalid pattern "${p}": ${(e as Error).message}`
+          break
+        }
+      }
+    }
+    if (isThresholdKind(form.rule_kind)) {
       if (!form.weight_op) next.weight_op = 'Operator is required.'
       const n = parseFloat(form.weight_pct)
       if (form.weight_pct === '' || isNaN(n) || n < 0 || n > 100)
@@ -127,31 +153,32 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
   }
 
   async function handleSubmit() {
-    const pendingKws = form.keywordInput
-      .split(',')
-      .map((k) => k.trim().toUpperCase())
-      .filter((k) => k && !form.keywords.includes(k))
-    const finalKeywords = [...form.keywords, ...pendingKws]
+    // Only flush the chip-input buffer for keyword kinds. Regex uses the textarea
+    // and updates `keywords` directly.
+    const finalKeywords = isRegexKind(form.rule_kind)
+      ? form.keywords
+      : (() => {
+          const pending = form.keywordInput
+            .split(',')
+            .map((k) => k.trim().toUpperCase())
+            .filter((k) => k && !form.keywords.includes(k))
+          return [...form.keywords, ...pending]
+        })()
     const finalForm = { ...form, keywords: finalKeywords, keywordInput: '' }
     setForm(finalForm)
 
     if (!validate()) return
     setSaving(true)
 
+    const isThreshold = isThresholdKind(finalForm.rule_kind)
     const data: RuleFormData = {
       name: finalForm.name,
       type: finalForm.type,
       rule_kind: finalForm.rule_kind,
       keywords: finalForm.keywords,
       match_mode: finalForm.match_mode,
-      weight_op:
-        finalForm.rule_kind === 'KEYWORD_WEIGHT_THRESHOLD' && finalForm.weight_op
-          ? finalForm.weight_op
-          : null,
-      weight_pct:
-        finalForm.rule_kind === 'KEYWORD_WEIGHT_THRESHOLD' && finalForm.weight_pct !== ''
-          ? parseFloat(finalForm.weight_pct)
-          : null,
+      weight_op: isThreshold && finalForm.weight_op ? finalForm.weight_op : null,
+      weight_pct: isThreshold && finalForm.weight_pct !== '' ? parseFloat(finalForm.weight_pct) : null,
       description: finalForm.description || null,
     }
 
@@ -166,7 +193,8 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
     }
   }
 
-  const isThreshold = form.rule_kind === 'KEYWORD_WEIGHT_THRESHOLD'
+  const isRegex = isRegexKind(form.rule_kind)
+  const isThreshold = isThresholdKind(form.rule_kind)
 
   return (
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
@@ -222,53 +250,79 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
               <SelectContent>
                 <SelectItem value="KEYWORD">Keyword match</SelectItem>
                 <SelectItem value="KEYWORD_WEIGHT_THRESHOLD">Keyword + weight threshold</SelectItem>
+                <SelectItem value="REGEX">Regex match</SelectItem>
+                <SelectItem value="REGEX_WEIGHT_THRESHOLD">Regex + weight threshold</SelectItem>
               </SelectContent>
             </Select>
           </Field>
 
-          {/* Keywords */}
-          <Field
-            label="Keywords"
-            hint="Press Enter or comma to add. Matching is case-insensitive."
-            error={errors.keywords}
-          >
-            <div
-              className={cn(
-                'flex flex-wrap gap-1.5 min-h-10 w-full rounded-md border bg-background px-3 py-2 text-sm cursor-text transition-colors',
-                'focus-within:outline-none focus-within:ring-1 focus-within:ring-ring',
-                errors.keywords ? 'border-destructive' : 'border-input',
-              )}
-              onClick={() =>
-                (document.getElementById('keyword-input') as HTMLInputElement)?.focus()
-              }
+          {/* Keywords / Patterns */}
+          {isRegex ? (
+            <Field
+              label="Patterns"
+              hint="One regex per line. Always case-insensitive — use (?-i:…) inline for case-sensitive."
+              error={errors.keywords}
             >
-              {form.keywords.map((kw) => (
-                <span
-                  key={kw}
-                  className="inline-flex items-center gap-1 rounded bg-secondary px-2 py-0.5 text-xs font-mono text-secondary-foreground"
-                >
-                  {kw}
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); removeKeyword(kw) }}
-                    className="text-muted-foreground hover:text-destructive transition-colors"
-                    aria-label={`Remove ${kw}`}
-                  >
-                    <X size={10} />
-                  </button>
-                </span>
-              ))}
-              <input
-                id="keyword-input"
-                value={form.keywordInput}
-                onChange={(e) => set('keywordInput', e.target.value)}
-                onKeyDown={handleKeywordKeyDown}
-                onBlur={commitKeywordInput}
-                placeholder={form.keywords.length === 0 ? 'e.g. LEVERAGED, INVERSE' : ''}
-                className="flex-1 min-w-20 bg-transparent outline-none placeholder:text-muted-foreground text-sm"
+              <Textarea
+                value={form.keywords.join('\n')}
+                onChange={(e) =>
+                  set(
+                    'keywords',
+                    e.target.value
+                      .split(/\r?\n/)
+                      .map((p) => p.trim())
+                      .filter((p) => p !== ''),
+                  )
+                }
+                placeholder={'e.g.\n\\b\\d+x\\b.*leverage\ninverse|short\\s+etf'}
+                rows={4}
+                className={cn('font-mono text-xs resize-none', errors.keywords && 'border-destructive')}
               />
-            </div>
-          </Field>
+            </Field>
+          ) : (
+            <Field
+              label="Keywords"
+              hint="Press Enter or comma to add. Matching is case-insensitive."
+              error={errors.keywords}
+            >
+              <div
+                className={cn(
+                  'flex flex-wrap gap-1.5 min-h-10 w-full rounded-md border bg-background px-3 py-2 text-sm cursor-text transition-colors',
+                  'focus-within:outline-none focus-within:ring-1 focus-within:ring-ring',
+                  errors.keywords ? 'border-destructive' : 'border-input',
+                )}
+                onClick={() =>
+                  (document.getElementById('keyword-input') as HTMLInputElement)?.focus()
+                }
+              >
+                {form.keywords.map((kw) => (
+                  <span
+                    key={kw}
+                    className="inline-flex items-center gap-1 rounded bg-secondary px-2 py-0.5 text-xs font-mono text-secondary-foreground"
+                  >
+                    {kw}
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); removeKeyword(kw) }}
+                      className="text-muted-foreground hover:text-destructive transition-colors"
+                      aria-label={`Remove ${kw}`}
+                    >
+                      <X size={10} />
+                    </button>
+                  </span>
+                ))}
+                <input
+                  id="keyword-input"
+                  value={form.keywordInput}
+                  onChange={(e) => set('keywordInput', e.target.value)}
+                  onKeyDown={handleKeywordKeyDown}
+                  onBlur={commitKeywordInput}
+                  placeholder={form.keywords.length === 0 ? 'e.g. LEVERAGED, INVERSE' : ''}
+                  className="flex-1 min-w-20 bg-transparent outline-none placeholder:text-muted-foreground text-sm"
+                />
+              </div>
+            </Field>
+          )}
 
           {/* Match mode — segmented control */}
           <Field label="Match Mode">
@@ -286,14 +340,20 @@ export default function RuleDrawer({ open, onClose, onSaved, rule }: Props) {
                       : 'bg-background text-foreground hover:bg-accent',
                   )}
                 >
-                  {mode === 'ANY' ? 'Any keyword' : 'All keywords'}
+                  {mode === 'ANY'
+                    ? isRegex ? 'Any pattern' : 'Any keyword'
+                    : isRegex ? 'All patterns' : 'All keywords'}
                 </button>
               ))}
             </div>
             <p className="text-xs text-muted-foreground">
               {form.match_mode === 'ANY'
-                ? 'Triggers if any keyword appears in the position name.'
-                : 'All keywords must appear in the same position name.'}
+                ? isRegex
+                  ? 'Triggers if any pattern matches the position name.'
+                  : 'Triggers if any keyword appears in the position name.'
+                : isRegex
+                  ? 'All patterns must match the same position name.'
+                  : 'All keywords must appear in the same position name.'}
             </p>
           </Field>
 

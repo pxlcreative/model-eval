@@ -16,6 +16,8 @@ enum RuleType {
 enum RuleKind {
   KEYWORD
   KEYWORD_WEIGHT_THRESHOLD
+  REGEX
+  REGEX_WEIGHT_THRESHOLD
 }
 
 enum MatchMode {

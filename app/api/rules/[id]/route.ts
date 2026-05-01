@@ -44,14 +44,30 @@ export async function PUT(request: NextRequest, { params }: Params) {
     data.type = b.type
   }
   if ('rule_kind' in b) {
-    if (b.rule_kind !== 'KEYWORD' && b.rule_kind !== 'KEYWORD_WEIGHT_THRESHOLD')
-      return err('"rule_kind" must be KEYWORD or KEYWORD_WEIGHT_THRESHOLD.', 400)
+    if (
+      b.rule_kind !== 'KEYWORD' &&
+      b.rule_kind !== 'KEYWORD_WEIGHT_THRESHOLD' &&
+      b.rule_kind !== 'REGEX' &&
+      b.rule_kind !== 'REGEX_WEIGHT_THRESHOLD'
+    )
+      return err('"rule_kind" must be KEYWORD, KEYWORD_WEIGHT_THRESHOLD, REGEX, or REGEX_WEIGHT_THRESHOLD.', 400)
     data.rule_kind = b.rule_kind
   }
   if ('keywords' in b) {
     if (!Array.isArray(b.keywords) || b.keywords.length === 0 || b.keywords.some((k) => typeof k !== 'string'))
       return err('"keywords" must be a non-empty array of strings.', 400)
     data.keywords = b.keywords as string[]
+    // If the (possibly updated) kind is regex, every pattern must compile.
+    const kind = ('rule_kind' in b ? b.rule_kind : undefined) as string | undefined
+    if (kind === 'REGEX' || kind === 'REGEX_WEIGHT_THRESHOLD') {
+      for (const p of b.keywords as string[]) {
+        try {
+          new RegExp(p, 'i')
+        } catch (e) {
+          return err(`Invalid regex pattern "${p}": ${(e as Error).message}`, 400)
+        }
+      }
+    }
   }
   if ('match_mode' in b) {
     if (b.match_mode !== 'ANY' && b.match_mode !== 'ALL')

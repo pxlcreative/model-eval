@@ -24,6 +24,15 @@ const WEIGHT_OP_LABEL: Record<string, string> = {
   LTE: '≤',
 }
 
+function ruleKindLabel(kind: SerializedRule['rule_kind']): string {
+  switch (kind) {
+    case 'KEYWORD': return 'Keyword'
+    case 'KEYWORD_WEIGHT_THRESHOLD': return 'Keyword + Threshold'
+    case 'REGEX': return 'Regex'
+    case 'REGEX_WEIGHT_THRESHOLD': return 'Regex + Threshold'
+  }
+}
+
 function TypeBadge({ type }: { type: 'HARD_STOP' | 'WARNING' }) {
   if (type === 'HARD_STOP') {
     return (
@@ -204,7 +213,7 @@ export default function RulesPage() {
                     </TableCell>
 
                     <TableCell className="text-sm text-muted-foreground">
-                      {rule.rule_kind === 'KEYWORD' ? 'Keyword' : 'Weight Threshold'}
+                      {ruleKindLabel(rule.rule_kind)}
                     </TableCell>
 
                     <TableCell>
