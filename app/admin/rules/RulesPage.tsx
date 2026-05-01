@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, useTransition } from 'react'
+import { useEffect, useState, useTransition } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
@@ -12,10 +12,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Plus, Pencil, Trash2, Copy, Check } from 'lucide-react'
+import { Plus, Pencil, Trash2 } from 'lucide-react'
 import { getRules, setRuleActive, deleteRule, type SerializedRule } from './actions'
-import { toXanoRules } from '@/lib/xano-export'
 import RuleDrawer from './RuleDrawer'
+import RulesIOPanel from './RulesIOPanel'
 
 const WEIGHT_OP_LABEL: Record<string, string> = {
   GT: '>',
@@ -267,7 +267,7 @@ export default function RulesPage() {
             </Table>
           </div>
 
-          <XanoExportPanel rules={rules} />
+          <RulesIOPanel rules={rules} onImported={load} />
           </>
         )}
       </div>
@@ -296,38 +296,3 @@ function RulesTableHead() {
   )
 }
 
-function XanoExportPanel({ rules }: { rules: SerializedRule[] }) {
-  const json = useMemo(() => JSON.stringify(toXanoRules(rules), null, 2), [rules])
-  const activeCount = useMemo(() => rules.filter((r) => r.active).length, [rules])
-  const [copied, setCopied] = useState(false)
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(json)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch (e) {
-      console.error('Clipboard write failed', e)
-    }
-  }
-
-  return (
-    <div className="mt-10 rounded-md border">
-      <div className="flex items-start justify-between gap-4 px-4 py-3 border-b bg-muted/30">
-        <div>
-          <h2 className="text-sm font-semibold">Xano export</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Paste this into the <code className="font-mono text-[11px]">rules</code> variable of your Xano <code className="font-mono text-[11px]">/evaluate</code> function stack. Active rules only ({activeCount}).
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={handleCopy} className="gap-1.5 shrink-0">
-          {copied ? <Check size={14} /> : <Copy size={14} />}
-          {copied ? 'Copied' : 'Copy JSON'}
-        </Button>
-      </div>
-      <pre className="text-xs font-mono px-4 py-3 max-h-96 overflow-auto bg-background">
-        {json}
-      </pre>
-    </div>
-  )
-}

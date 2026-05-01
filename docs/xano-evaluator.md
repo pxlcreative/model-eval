@@ -3,8 +3,8 @@
 A standalone Xano endpoint that mirrors `POST /api/evaluate` from this repo, intended
 for external model-database integrations. The Xano endpoint **uses no Xano database**:
 its rule set is a hard-coded constant inside the function stack, kept in sync with the
-Postgres rules in this app via the `npm run export:xano-rules` tool (also surfaced as a
-copy-paste panel on `/admin/rules`).
+Postgres rules in this app via the `Import / Export` panel on `/admin/rules` (or the
+`npm run export:xano-rules` CLI).
 
 The existing Next.js app, Postgres, admin UI, and `/api/evaluate` are untouched.
 
@@ -14,13 +14,20 @@ The existing Next.js app, Postgres, admin UI, and `/api/evaluate` are untouched.
 
 After any change to rules in `/admin/rules`:
 
-1. Either click **Copy JSON** in the *Xano export* panel at `/admin/rules`,
-   or run `npm run export:xano-rules` from the repo root.
-2. In the Xano UI, open `model-eval / POST /evaluate`. Edit the `rules` variable in the
+1. Open the **Import / Export** panel on `/admin/rules`.
+2. On the **Export** tab, click **Xano paste defaults** (selects the right fields,
+   JSON format, active-only). Equivalent CLI: `npm run export:xano-rules`.
+3. Click **Copy**.
+4. In the Xano UI, open `model-eval / POST /evaluate`. Edit the `rules` variable in the
    function stack, paste, save, redeploy.
 
-Soft-deleted rules (`active = false`) are excluded automatically. The export is
-idempotent.
+Soft-deleted rules (`active = false`) are excluded automatically by the Xano paste
+preset. The export is idempotent.
+
+For full backups (cross-machine sync, version control), use the **Full backup** preset
+on the same panel — JSON or CSV, all fields including `active` and `description`,
+re-importable via the **Import** tab. Imports match existing rules by `id` if present,
+otherwise by `name`; rules absent from the file are left untouched.
 
 ---
 

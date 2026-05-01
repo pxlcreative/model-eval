@@ -3,6 +3,7 @@
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
+import type { ImportRow } from '@/lib/rules-io'
 
 // Plain-object representation safe to pass to client components
 export type SerializedRule = {
@@ -90,4 +91,99 @@ export async function setRuleActive(id: string, active: boolean): Promise<void> 
 export async function deleteRule(id: string): Promise<void> {
   await prisma.rule.update({ where: { id }, data: { active: false } })
   revalidatePath('/admin/rules')
+}
+
+export type ImportPlanEntry = {
+  index: number
+  name: string
+  action: 'create' | 'update'
+  match: 'id' | 'name' | null
+  existingId: string | null
+}
+
+export type ImportPlan = {
+  entries: ImportPlanEntry[]
+}
+
+export type ImportSummary = {
+  created: number
+  updated: number
+  errors: { name?: string; message: string }[]
+}
+
+function rowToPrismaData(row: ImportRow): Prisma.RuleUncheckedCreateInput {
+  return {
+    name: row.name.trim(),
+    type: row.type,
+    rule_kind: row.rule_kind,
+    keywords: row.keywords,
+    match_mode: row.match_mode ?? 'ANY',
+    weight_op: row.weight_op ?? null,
+    weight_pct: row.weight_pct === null || row.weight_pct === undefined ? null : new Prisma.Decimal(row.weight_pct),
+    description: row.description ?? null,
+    active: row.active ?? true,
+  }
+}
+
+// Plan an import without writing — used by the UI preview to show
+// Create/Update badges before the user confirms.
+export async function planImport(rows: ImportRow[]): Promise<ImportPlan> {
+  const ids = rows.map((r) => r.id).filter((id): id is string => !!id)
+  const names = rows.map((r) => r.name)
+  const existingById = ids.length
+    ? await prisma.rule.findMany({ where: { id: { in: ids } }, select: { id: true } })
+    : []
+  const existingByName = await prisma.rule.findMany({
+    where: { name: { in: names } },
+    select: { id: true, name: true },
+  })
+  const idSet = new Set(existingById.map((r) => r.id))
+  const nameMap = new Map(existingByName.map((r) => [r.name, r.id]))
+
+  const entries: ImportPlanEntry[] = rows.map((row, i) => {
+    if (row.id && idSet.has(row.id)) {
+      return { index: i, name: row.name, action: 'update', match: 'id', existingId: row.id }
+    }
+    const byName = nameMap.get(row.name)
+    if (byName) {
+      return { index: i, name: row.name, action: 'update', match: 'name', existingId: byName }
+    }
+    return { index: i, name: row.name, action: 'create', match: null, existingId: null }
+  })
+
+  return { entries }
+}
+
+export async function importRules(rows: ImportRow[]): Promise<ImportSummary> {
+  const plan = await planImport(rows)
+
+  let created = 0
+  let updated = 0
+  const errors: ImportSummary['errors'] = []
+
+  await prisma.$transaction(async (tx) => {
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]
+      const entry = plan.entries[i]
+      const data = rowToPrismaData(row)
+
+      try {
+        if (entry.action === 'update' && entry.existingId) {
+          await tx.rule.update({ where: { id: entry.existingId }, data })
+          updated++
+        } else {
+          await tx.rule.create({ data })
+          created++
+        }
+      } catch (e) {
+        errors.push({
+          name: row.name,
+          message: e instanceof Error ? e.message : 'Unknown error',
+        })
+      }
+    }
+  })
+
+  revalidatePath('/admin/rules')
+  return { created, updated, errors }
 }
